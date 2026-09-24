@@ -1,20 +1,20 @@
 #the mod name as displayed in-game
-displayName: "example"
+displayName: "Node Last (노드 마지막 건설)"
 
 #the internal name of your mod
-name: "example"
+name: "node-last"
 
 #your name
-author: "author"
+author: "teong_geuri"
 
 #the fully qualified main class of the mod
-main: "example.example"
+main: "nodelast.NodeLastMod"
 
 #the mod description as seen in the mod dialog
-description: "example"
+description: "건설 대기열의 노드가 아닌 건물을 모두 지은 뒤에 전력/빔 노드를 마지막에 설치합니다. (철거 계획은 영향 없음) / Builds power & beam nodes only after every other queued block is finished."
 
 #the mod version
-version: 0.0.0
+version: 1.0.0
 
 #the minimum game build required to run this mod
 minGameVersion: 160
@@ -22,5 +22,5 @@ minGameVersion: 160
 #this is a java mod
 java: true
 
-#hide from multiplayer mod list; this mod must stay client-side/render-only
+#client-side only helper: does not need to match the server
 hidden: true

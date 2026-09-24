@@ -1,0 +1,135 @@
+apply plugin: "java"
+
+sourceSets.main.java.srcDirs = ["src"]
+
+//reads a "key: value" line out of mod.hjson; returns null if not found
+def readHjsonField(String key){
+    def source = file("mod.hjson").getText("UTF-8")
+    def matcher = source =~ /(?m)^${key}:\s*"?([^",\n]+)"?\s*$/
+    return matcher.find() ? matcher.group(1).trim() : null
+}
+
+ext{
+    // Mindustry version to depend on.
+    // Valid values:
+    // - latest: depend on the latest release of mindustry
+    // - be: depend on the very latest commit of mindustry
+    // - v<number>: depend on a specific version
+    // Defaults come from mod.hjson (minGameVersion / version) unless overridden with -P flags.
+    mindustryVersion = findProperty("mindustryVersion") ?: "v${readHjsonField("minGameVersion") ?: "159.7"}"
+    modVersion = findProperty("modVersion") ?: (readHjsonField("version") ?: "1.2.0")
+    isWindows = System.getProperty("os.name").toLowerCase().contains("windows")
+    sdkRoot = System.getenv("ANDROID_HOME") ?: System.getenv("ANDROID_SDK_ROOT")
+}
+
+repositories{
+    mavenCentral()
+
+    //Downloads the dependencies JAR file from Mindustry releases; does not use any real repository. Surprisingly, this is the most reliable option.
+    ivy{
+        url = 'https://github.com/'
+        patternLayout{ artifact(
+            (mindustryVersion == "latest" ? '/[organisation]/[module]/releases/[revision]/download/dependencies.jar' : //latest stable release
+            mindustryVersion == "be" ? '/[organisation]/[module]/releases/download/master/[revision].jar' : //latest commit (BE)
+            '/[organisation]/[module]/releases/download/[revision]/dependencies.jar')) //specific release
+        }
+        metadataSources{ artifact() }
+
+        content{
+            if(mindustryVersion == "be"){
+                //BE artifact version is always 'latest'
+                includeVersion("Anuken", "MindustryBuilds", "latest")
+            }else{
+                includeVersion("Anuken", "Mindustry", mindustryVersion)
+            }
+        }
+    }
+}
+
+java{
+    targetCompatibility = JavaVersion.VERSION_17
+    sourceCompatibility = JavaVersion.VERSION_17
+}
+
+dependencies{
+    compileOnly mindustryVersion == "be" ? "Anuken:MindustryBuilds:latest" : "Anuken:Mindustry:$mindustryVersion"
+}
+
+def generatedModMetadata = layout.buildDirectory.file("generated/mod.hjson")
+
+tasks.register("generateModMetadata"){
+    outputs.file(generatedModMetadata)
+    doLast{
+        def source = file("mod.hjson").getText("UTF-8")
+        def metadata = source.replaceFirst(/(?m)^version:\s*.+$/, "version: ${modVersion}")
+        def output = generatedModMetadata.get().asFile
+        output.parentFile.mkdirs()
+        output.setText(metadata, "UTF-8")
+    }
+}
+
+// ExecOperations 서비스 주입을 위한 인터페이스 정의
+interface ExecOps {
+    @Inject
+    ExecOperations getExecOperations()
+}
+
+tasks.register('jarAndroid') {
+    dependsOn "jar"
+    def projectName = project.name
+    def execOps = objects.newInstance(ExecOps)
+
+    doLast {
+        if(!sdkRoot || !new File(sdkRoot).exists()) throw new GradleException("No valid Android SDK found.")
+
+        def platformRoot = new File("$sdkRoot/platforms/").listFiles()?.sort()?.reverse()?.find { f -> new File(f, "android.jar").exists() }
+        if(!platformRoot) throw new GradleException("No android.jar found in SDK platforms directory.")
+
+        def d8Executable = isWindows ? "d8.bat" : "d8"
+        def buildToolsDir = new File("$sdkRoot/build-tools/").listFiles()?.sort()?.last()
+        def d8File = buildToolsDir ? new File(buildToolsDir, d8Executable) : null
+        def d8Path = (d8File && d8File.exists()) ? d8File.absolutePath : d8Executable
+
+        def deps = (configurations.compileClasspath.asList() + configurations.runtimeClasspath.asList() + [new File(platformRoot, "android.jar")])
+        def d8Args = []
+        deps.each { 
+            d8Args.add("--classpath")
+            d8Args.add(it.path)
+        }
+        d8Args.addAll(["--min-api", "26", "--output", "build/libs/${projectName}Android.jar", "build/libs/${projectName}Desktop.jar"])
+
+        // Gradle 9.x 전용 안전한 exec 실행 방식
+        execOps.execOperations.exec {
+            commandLine([d8Path] + d8Args)
+        }
+    }
+}
+
+jar{
+    dependsOn "generateModMetadata"
+    archiveFileName = "${project.name}Desktop.jar"
+
+    from{
+        configurations.runtimeClasspath.collect{ it.isDirectory() ? it : zipTree(it) }
+    }
+
+    from(generatedModMetadata)
+
+    from("assets/"){
+        include "**"
+    }
+}
+
+tasks.register('deploy', Jar) {
+    def projectName = project.name
+    dependsOn jarAndroid
+    dependsOn jar
+    archiveFileName = "${projectName}.jar"
+
+    // Desktop.jar와 classes.dex가 포함된 Android.jar를 하나로 통합
+    from { [zipTree("build/libs/${projectName}Desktop.jar"), zipTree("build/libs/${projectName}Android.jar")] }
+
+    doLast {
+        delete "build/libs/${projectName}Android.jar"
+    }
+}
